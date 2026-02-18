@@ -7,4 +7,5 @@ class UserMode(StatesGroup):
     choosing_ready_dish = State()
     viewing_top = State()
     viewing_favorites = State()
+    viewing_history = State()
     editing_settings = State()

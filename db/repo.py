@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from sqlalchemy import Select, func, select
@@ -8,6 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Recipe, RecipeVote, User, UserFavorite
 
 RequestType = Literal["ingredients", "random"]
+BrowseScope = Literal["top", "favorites", "history"]
+
+
+@dataclass(slots=True)
+class RecipeWithRating:
+    recipe: Recipe
+    rating: int
 
 
 class RecipeRepository:
@@ -108,3 +116,52 @@ class RecipeRepository:
             .order_by(rating.desc(), Recipe.created_at.desc())
             .limit(limit)
         )
+
+    async def get_user_liked_recipe_ids(self, user_id: int) -> set[int]:
+        rows = await self.session.scalars(
+            select(RecipeVote.recipe_id).where(RecipeVote.user_id == user_id, RecipeVote.vote == 1)
+        )
+        return set(rows.all())
+
+    async def get_user_favorite_recipe_ids(self, user_id: int) -> set[int]:
+        rows = await self.session.scalars(
+            select(UserFavorite.recipe_id).where(UserFavorite.user_id == user_id)
+        )
+        return set(rows.all())
+
+    async def get_recipe_with_rating(self, recipe_id: int) -> RecipeWithRating | None:
+        rating = func.coalesce(func.sum(RecipeVote.vote), 0).label("rating")
+        row = await self.session.execute(
+            select(Recipe, rating)
+            .outerjoin(RecipeVote, RecipeVote.recipe_id == Recipe.id)
+            .where(Recipe.id == recipe_id)
+            .group_by(Recipe.id)
+        )
+        item = row.one_or_none()
+        if item is None:
+            return None
+        recipe, recipe_rating = item
+        return RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0))
+
+    async def list_recipes_with_rating(self, scope: BrowseScope, viewer_user_id: int) -> list[RecipeWithRating]:
+        rating = func.coalesce(func.sum(RecipeVote.vote), 0).label("rating")
+        query = (
+            select(Recipe, rating)
+            .outerjoin(RecipeVote, RecipeVote.recipe_id == Recipe.id)
+            .group_by(Recipe.id)
+        )
+        if scope == "favorites":
+            query = query.join(UserFavorite, UserFavorite.recipe_id == Recipe.id).where(
+                UserFavorite.user_id == viewer_user_id
+            )
+            query = query.order_by(Recipe.created_at.desc())
+        elif scope == "history":
+            query = query.where(Recipe.user_id == viewer_user_id).order_by(Recipe.created_at.desc())
+        else:
+            query = query.order_by(rating.desc(), Recipe.created_at.desc())
+
+        rows = await self.session.execute(query)
+        result: list[RecipeWithRating] = []
+        for recipe, recipe_rating in rows.all():
+            result.append(RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0)))
+        return result
