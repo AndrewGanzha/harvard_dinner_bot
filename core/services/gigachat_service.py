@@ -46,6 +46,8 @@ class GigaChatClient:
         self.scope = scope if scope is not None else settings.gigachat_scope
         self.api_url = (api_url if api_url is not None else settings.gigachat_api_url).rstrip("/")
         self.model = model if model is not None else settings.gigachat_model
+        self.ssl_verify = settings.gigachat_ssl_verify
+        self.ca_bundle = settings.gigachat_ca_bundle.strip()
         self.timeout_seconds = (
             timeout_seconds if timeout_seconds is not None else settings.gigachat_timeout_seconds
         )
@@ -74,6 +76,17 @@ class GigaChatClient:
     def _has_valid_access_token(self) -> bool:
         return bool(self._access_token) and time.time() < (self._access_token_expires_at - 30)
 
+    @property
+    def _httpx_verify(self) -> bool | str:
+        return self.ca_bundle or self.ssl_verify
+
+    @staticmethod
+    def _auth_header_value(auth_key: str) -> str:
+        value = auth_key.strip()
+        if value.lower().startswith("basic "):
+            return value
+        return f"Basic {value}"
+
     async def _fetch_access_token(self, client: httpx.AsyncClient) -> str:
         if not self.auth_key:
             raise GigaChatError("GIGACHAT_AUTH_KEY is empty")
@@ -82,7 +95,7 @@ class GigaChatClient:
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
             "RqUID": str(uuid.uuid4()),
-            "Authorization": f"Basic {self.auth_key}",
+            "Authorization": self._auth_header_value(self.auth_key),
         }
         response = await client.post(
             self.oauth_url,
@@ -177,7 +190,7 @@ class GigaChatClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds, verify=self._httpx_verify) as client:
                     access_token = await self._get_access_token(client)
                     headers = {
                         "Content-Type": "application/json",
@@ -213,7 +226,18 @@ class GigaChatClient:
                 validated = RecipeResponse.model_validate(parsed)
                 logger.info("gigachat_recipe_validated", attempt=attempt, scenario=scenario)
                 return validated
-            except (httpx.HTTPError, json.JSONDecodeError, ValidationError, GigaChatError) as exc:
+            except httpx.HTTPStatusError as exc:
+                last_error = GigaChatError(
+                    f"HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                )
+                logger.warning(
+                    "gigachat_attempt_failed",
+                    scenario=scenario,
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error=str(last_error),
+                )
+            except (httpx.RequestError, json.JSONDecodeError, ValidationError, GigaChatError) as exc:
                 last_error = exc
                 logger.warning(
                     "gigachat_attempt_failed",

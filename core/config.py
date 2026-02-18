@@ -17,7 +17,9 @@ class Settings(BaseSettings):
         "https://gigachat.devices.sberbank.ru/api/v1",
         alias="GIGACHAT_API_URL",
     )
-    gigachat_model: str = Field("GigaChat", alias="GIGACHAT_MODEL")
+    gigachat_model: str = Field("GigaChat-2", alias="GIGACHAT_MODEL")
+    gigachat_ssl_verify: bool = Field(True, alias="GIGACHAT_SSL_VERIFY")
+    gigachat_ca_bundle: str = Field("", alias="GIGACHAT_CA_BUNDLE")
     gigachat_timeout_seconds: float = Field(30.0, alias="GIGACHAT_TIMEOUT_SECONDS")
     gigachat_max_retries: int = Field(3, alias="GIGACHAT_MAX_RETRIES")
     db_backend: str = Field("sqlite", alias="DB_BACKEND")

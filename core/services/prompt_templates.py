@@ -26,7 +26,8 @@ INGREDIENTS_PROMPT_TEMPLATE = """
    - plate_map: object с ключами veggies_fruits, whole_grains, proteins, fats, dairy(optional), others
    - nutrition: object | null
    - tips: string[]
-3) Учитывай принципы Harvard Plate и заполни plate_map содержательно.
+3) Каждое поле с типом string[] должно быть именно JSON-массивом строк, не одной строкой.
+4) Учитывай принципы Harvard Plate и заполни plate_map содержательно.
 """
 
 READY_DISH_PROMPT_TEMPLATE = """
@@ -49,7 +50,8 @@ READY_DISH_PROMPT_TEMPLATE = """
    - plate_map: object с ключами veggies_fruits, whole_grains, proteins, fats, dairy(optional), others
    - nutrition: object | null
    - tips: string[]
-3) Рецепт должен быть реалистичным, выполнимым дома и соответствовать Harvard Plate.
+3) Каждое поле с типом string[] должно быть именно JSON-массивом строк, не одной строкой.
+4) Рецепт должен быть реалистичным, выполнимым дома и соответствовать Harvard Plate.
 """
 
 # Backward-compatible alias for existing imports.

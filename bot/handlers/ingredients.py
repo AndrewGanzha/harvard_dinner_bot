@@ -22,6 +22,23 @@ def _split_ingredients(text: str) -> list[str]:
     return [item.strip() for item in normalized.split(",") if item.strip()]
 
 
+def _gigachat_error_message(exc: Exception) -> str:
+    details = str(exc)
+    details_upper = details.upper()
+    if "SSL" in details_upper or "TLS" in details_upper or "CERT" in details_upper:
+        return (
+            "Не удалось установить защищенное соединение с GigaChat. "
+            "Проверьте сертификаты (Минцифры) или установите GIGACHAT_SSL_VERIFY=false."
+        )
+    if "HTTP 401" in details_upper:
+        return "Ошибка авторизации GigaChat (401). Проверьте Basic-ключ в GIGACHAT_AUTH_KEY."
+    if "HTTP 403" in details_upper:
+        return "Доступ к GigaChat отклонен (403). Проверьте права ключа и scope."
+    if "HTTP 400" in details_upper:
+        return "Некорректный запрос к GigaChat (400). Проверьте модель и параметры запроса."
+    return "Не удалось получить рецепт от GigaChat. Проверьте токен и попробуйте еще раз."
+
+
 @router.message(UserMode.entering_ingredients, F.text)
 async def ingredients_input_handler(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
@@ -58,7 +75,7 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
         )
     except GigaChatError as exc:
         logger.warning("recipe_generation_failed", mode="ingredients", error=str(exc))
-        await message.answer("Не удалось получить рецепт от GigaChat. Проверьте токен и попробуйте еще раз.")
+        await message.answer(_gigachat_error_message(exc))
         await state.set_state(UserMode.main_menu)
         return
     except Exception as exc:
