@@ -1,0 +1,8 @@
+services:
+  bot:
+    build:
+      context: .
+    env_file:
+      - .env
+    command: python -m bot.main
+    restart: unless-stopped
