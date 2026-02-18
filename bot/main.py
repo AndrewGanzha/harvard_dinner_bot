@@ -4,7 +4,14 @@ import structlog
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import browse_router, ingredients_router, menu_router, settings_router, start_router
+from bot.handlers import (
+    browse_router,
+    ingredients_router,
+    menu_router,
+    ready_dish_router,
+    settings_router,
+    start_router,
+)
 from bot.middlewares.logging import UpdateLoggingMiddleware
 from core.config import settings
 from core.logging import configure_logging
@@ -22,6 +29,7 @@ async def main() -> None:
     dp.update.middleware(UpdateLoggingMiddleware())
     dp.include_router(start_router)
     dp.include_router(ingredients_router)
+    dp.include_router(ready_dish_router)
     dp.include_router(browse_router)
     dp.include_router(settings_router)
     dp.include_router(menu_router)

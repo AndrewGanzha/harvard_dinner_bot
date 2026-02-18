@@ -17,7 +17,7 @@ MENU_TRANSITIONS: dict[str, tuple[State, str, str]] = {
     MENU_READY_DISH: (
         UserMode.choosing_ready_dish,
         "menu:ready_dish",
-        "Режим готовых блюд активирован. Скоро добавим подбор по фильтрам.",
+        "Режим готовых блюд активирован. Опишите запрос: например, 'быстрый вегетарианский ужин до 25 минут'.",
     ),
     MENU_SETTINGS: (
         UserMode.editing_settings,

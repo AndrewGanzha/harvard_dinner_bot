@@ -3,7 +3,7 @@ SYSTEM_PROMPT = (
     "Всегда отвечай только валидным JSON без markdown и лишнего текста."
 )
 
-USER_PROMPT_TEMPLATE = """
+INGREDIENTS_PROMPT_TEMPLATE = """
 Сформируй рецепт из ингредиентов пользователя.
 
 Входные ингредиенты:
@@ -28,3 +28,29 @@ USER_PROMPT_TEMPLATE = """
    - tips: string[]
 3) Учитывай принципы Harvard Plate и заполни plate_map содержательно.
 """
+
+READY_DISH_PROMPT_TEMPLATE = """
+Подбери один конкретный рецепт блюда по запросу пользователя.
+
+Запрос пользователя:
+{dish_request}
+
+Пожелания пользователя:
+{user_preferences}
+
+Требования к JSON-ответу:
+1) Только JSON-объект.
+2) Поля:
+   - title: string
+   - ingredients: string[]
+   - steps: string[]
+   - time_minutes: int
+   - servings: int
+   - plate_map: object с ключами veggies_fruits, whole_grains, proteins, fats, dairy(optional), others
+   - nutrition: object | null
+   - tips: string[]
+3) Рецепт должен быть реалистичным, выполнимым дома и соответствовать Harvard Plate.
+"""
+
+# Backward-compatible alias for existing imports.
+USER_PROMPT_TEMPLATE = INGREDIENTS_PROMPT_TEMPLATE

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import re
+
 import structlog
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from bot.formatters import format_plate_analysis, format_recipe
+from bot.formatters import format_recipe
 from bot.keyboards.browse import recipe_actions_keyboard
 from bot.states import UserMode
 from core.services.gigachat_service import GigaChatClient, GigaChatError
-from core.services.plate_service import PlateService
 from db.repo import RecipeRepository
 from db.session import SessionFactory
 
@@ -17,25 +18,26 @@ logger = structlog.get_logger(__name__)
 router = Router()
 
 
-def _split_ingredients(text: str) -> list[str]:
-    normalized = text.replace("\n", ",").replace(";", ",")
-    return [item.strip() for item in normalized.split(",") if item.strip()]
+def _extract_source_ingredients(request_text: str) -> list[str]:
+    normalized = request_text.replace("\n", ",").replace(";", ",")
+    items = [item.strip() for item in normalized.split(",") if item.strip()]
+    if len(items) > 1:
+        return items[:8]
+
+    tokens = re.findall(r"[a-zа-я0-9]+", request_text.lower())
+    return tokens[:6]
 
 
-@router.message(UserMode.entering_ingredients, F.text)
-async def ingredients_input_handler(message: Message, state: FSMContext) -> None:
+@router.message(UserMode.choosing_ready_dish, F.text)
+async def ready_dish_input_handler(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
         await message.answer("Не удалось определить пользователя.")
         return
 
-    ingredients = _split_ingredients(message.text or "")
-    if not ingredients:
-        await message.answer("Не вижу ингредиентов. Отправьте список через запятую или с новой строки.")
+    dish_request = (message.text or "").strip()
+    if not dish_request:
+        await message.answer("Опишите, какое блюдо хотите: например, 'быстрый вегетарианский ужин'.")
         return
-
-    plate_service = PlateService()
-    analysis = plate_service.analyze(ingredients)
-    await message.answer(format_plate_analysis(analysis))
 
     user_id: int | None = None
     user_preferences_text = "нет"
@@ -50,19 +52,21 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
         user_preferences_text = settings.prompt_text()
         await session.commit()
 
+    source_ingredients = _extract_source_ingredients(dish_request)
     try:
-        recipe = await GigaChatClient().generate_recipe_from_ingredients(
-            ingredients=ingredients,
-            missing_groups=analysis.missing_groups,
+        recipe = await GigaChatClient().generate_ready_dish(
+            dish_request=dish_request,
             user_preferences=user_preferences_text,
         )
+        if not source_ingredients:
+            source_ingredients = recipe.ingredients[:6]
     except GigaChatError as exc:
-        logger.warning("recipe_generation_failed", mode="ingredients", error=str(exc))
+        logger.warning("recipe_generation_failed", mode="ready_dish", error=str(exc))
         await message.answer("Не удалось получить рецепт от GigaChat. Проверьте токен и попробуйте еще раз.")
         await state.set_state(UserMode.main_menu)
         return
     except Exception as exc:
-        logger.exception("recipe_generation_failed_unexpected", mode="ingredients", error=str(exc))
+        logger.exception("recipe_generation_failed_unexpected", mode="ready_dish", error=str(exc))
         await message.answer("Произошла ошибка при генерации рецепта. Попробуйте повторить запрос.")
         await state.set_state(UserMode.main_menu)
         return
@@ -81,9 +85,9 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
 
         saved = await repo.save_recipe(
             user_id=user_id,
-            request_type="ingredients",
-            source_ingredients=ingredients,
-            supplemented_ingredients=analysis.recommendations,
+            request_type="random",
+            source_ingredients=source_ingredients,
+            supplemented_ingredients=[],
             llm_response=recipe.model_dump(by_alias=True),
         )
         recipe_id = saved.id
