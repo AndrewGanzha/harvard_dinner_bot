@@ -22,7 +22,7 @@ MENU_TRANSITIONS: dict[str, tuple[State, str, str]] = {
     MENU_SETTINGS: (
         UserMode.editing_settings,
         "menu:settings",
-        "Режим настроек активирован. Скоро добавим персонализацию.",
+        "Режим настроек активирован. Вы можете задать цель, ограничения и предпочтения.",
     ),
 }
 

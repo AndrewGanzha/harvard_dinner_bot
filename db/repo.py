@@ -10,12 +10,48 @@ from db.models import Recipe, RecipeVote, User, UserFavorite
 
 RequestType = Literal["ingredients", "random"]
 BrowseScope = Literal["top", "favorites", "history"]
+GoalType = Literal["lose", "maintain", "gain"]
 
 
 @dataclass(slots=True)
 class RecipeWithRating:
     recipe: Recipe
     rating: int
+
+
+@dataclass(slots=True)
+class UserSettings:
+    goal: GoalType | None = None
+    allergies: list[str] | None = None
+    excluded_products: list[str] | None = None
+    preferred_cuisine: str | None = None
+    preferred_complexity: str | None = None
+    time_limit_minutes: int | None = None
+
+    def prompt_text(self) -> str:
+        goal_text = {
+            "lose": "похудение",
+            "maintain": "поддержание",
+            "gain": "набор",
+            None: "не указана",
+        }[self.goal]
+        allergies = ", ".join(self.allergies or []) or "нет"
+        excluded = ", ".join(self.excluded_products or []) or "нет"
+        cuisine = self.preferred_cuisine or "не указана"
+        complexity = self.preferred_complexity or "не указана"
+        time_limit = (
+            f"{self.time_limit_minutes} минут"
+            if self.time_limit_minutes is not None
+            else "не указан"
+        )
+        return (
+            f"цель: {goal_text}; "
+            f"аллергии: {allergies}; "
+            f"исключить продукты: {excluded}; "
+            f"кухня: {cuisine}; "
+            f"сложность: {complexity}; "
+            f"лимит времени: {time_limit}"
+        )
 
 
 class RecipeRepository:
@@ -165,3 +201,50 @@ class RecipeRepository:
         for recipe, recipe_rating in rows.all():
             result.append(RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0)))
         return result
+
+    async def get_user_settings(self, user_id: int) -> UserSettings:
+        user = await self.session.get(User, user_id)
+        if user is None:
+            return UserSettings()
+        goal: GoalType | None = None
+        if user.goal in ("lose", "maintain", "gain"):
+            goal = user.goal
+        return UserSettings(
+            goal=goal,
+            allergies=list(user.allergies or []),
+            excluded_products=list(user.excluded_products or []),
+            preferred_cuisine=user.preferred_cuisine,
+            preferred_complexity=user.preferred_complexity,
+            time_limit_minutes=user.time_limit_minutes,
+        )
+
+    async def update_user_settings(
+        self,
+        user_id: int,
+        *,
+        goal: GoalType | None | object = ...,
+        allergies: list[str] | None | object = ...,
+        excluded_products: list[str] | None | object = ...,
+        preferred_cuisine: str | None | object = ...,
+        preferred_complexity: str | None | object = ...,
+        time_limit_minutes: int | None | object = ...,
+    ) -> User:
+        user = await self.session.get(User, user_id)
+        if user is None:
+            raise ValueError(f"User {user_id} not found")
+
+        if goal is not ...:
+            user.goal = goal
+        if allergies is not ...:
+            user.allergies = allergies or []
+        if excluded_products is not ...:
+            user.excluded_products = excluded_products or []
+        if preferred_cuisine is not ...:
+            user.preferred_cuisine = preferred_cuisine
+        if preferred_complexity is not ...:
+            user.preferred_complexity = preferred_complexity
+        if time_limit_minutes is not ...:
+            user.time_limit_minutes = time_limit_minutes
+
+        await self.session.flush()
+        return user

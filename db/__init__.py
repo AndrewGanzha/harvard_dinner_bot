@@ -1,5 +1,5 @@
 from db.models import Recipe, RecipeVote, User, UserFavorite
-from db.repo import RecipeRepository, RecipeWithRating
+from db.repo import RecipeRepository, RecipeWithRating, UserSettings
 from db.session import SessionFactory, engine, init_models
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "RecipeVote",
     "SessionFactory",
     "User",
+    "UserSettings",
     "UserFavorite",
     "engine",
     "init_models",

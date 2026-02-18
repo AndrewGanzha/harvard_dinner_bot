@@ -17,6 +17,12 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    goal: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    allergies: Mapped[list[str]] = mapped_column(JSON, default=list)
+    excluded_products: Mapped[list[str]] = mapped_column(JSON, default=list)
+    preferred_cuisine: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preferred_complexity: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    time_limit_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     recipes: Mapped[list["Recipe"]] = relationship(back_populates="user")

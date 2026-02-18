@@ -64,11 +64,25 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
     analysis = plate_service.analyze(ingredients)
     await message.answer(format_plate_analysis(analysis))
 
+    user_id: int | None = None
+    user_preferences_text = "нет"
+    async with SessionFactory() as session:
+        repo = RecipeRepository(session)
+        user = await repo.ensure_user(
+            tg_user_id=message.from_user.id,
+            username=message.from_user.username,
+        )
+        user_id = user.id
+        settings = await repo.get_user_settings(user.id)
+        user_preferences_text = settings.prompt_text()
+        await session.commit()
+
     recipe_source = "llm"
     try:
         recipe = await GigaChatClient().generate_recipe(
             ingredients=ingredients,
             missing_groups=analysis.missing_groups,
+            user_preferences=user_preferences_text,
         )
     except (GigaChatError, Exception) as exc:
         recipe_source = "fallback"
@@ -80,12 +94,14 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
     rating = 0
     async with SessionFactory() as session:
         repo = RecipeRepository(session)
-        user = await repo.ensure_user(
-            tg_user_id=message.from_user.id,
-            username=message.from_user.username,
-        )
+        if user_id is None:
+            user = await repo.ensure_user(
+                tg_user_id=message.from_user.id,
+                username=message.from_user.username,
+            )
+            user_id = user.id
         saved = await repo.save_recipe(
-            user_id=user.id,
+            user_id=user_id,
             request_type="ingredients",
             source_ingredients=ingredients,
             supplemented_ingredients=analysis.recommendations,
@@ -93,7 +109,7 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
         )
         recipe_id = saved.id
         rating = await repo.get_rating(saved.id)
-        is_favorite = saved.id in await repo.get_user_favorite_recipe_ids(user.id)
+        is_favorite = saved.id in await repo.get_user_favorite_recipe_ids(user_id)
         await session.commit()
 
     await message.answer(
