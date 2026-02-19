@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import time
-import uuid
 from typing import Any
 
-import httpx
 import structlog
+from gigachat import GigaChat
+from gigachat import exceptions as gigachat_exceptions
 from pydantic import ValidationError
 
 from core.config import settings
@@ -19,6 +19,20 @@ from core.services.prompt_templates import (
 from schemas import RecipeResponse
 
 logger = structlog.get_logger(__name__)
+
+
+class _MissingSDKException(Exception):
+    pass
+
+
+AuthenticationError = getattr(gigachat_exceptions, "AuthenticationError", _MissingSDKException)
+ForbiddenError = getattr(
+    gigachat_exceptions,
+    "ForbiddenError",
+    getattr(gigachat_exceptions, "PermissionDeniedError", _MissingSDKException),
+)
+BadRequestError = getattr(gigachat_exceptions, "BadRequestError", _MissingSDKException)
+ResponseError = getattr(gigachat_exceptions, "ResponseError", _MissingSDKException)
 
 
 class GigaChatError(RuntimeError):
@@ -53,9 +67,6 @@ class GigaChatClient:
         )
         self.max_retries = max_retries if max_retries is not None else settings.gigachat_max_retries
 
-        self._access_token: str | None = None
-        self._access_token_expires_at: float = 0.0
-
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:
         payload = text.strip()
@@ -73,76 +84,87 @@ class GigaChatClient:
     def _format_list(items: list[str]) -> str:
         return ", ".join(items) if items else "нет"
 
-    def _has_valid_access_token(self) -> bool:
-        return bool(self._access_token) and time.time() < (self._access_token_expires_at - 30)
-
-    @property
-    def _httpx_verify(self) -> bool | str:
-        return self.ca_bundle or self.ssl_verify
-
-    @staticmethod
-    def _auth_header_value(auth_key: str) -> str:
-        value = auth_key.strip()
-        if value.lower().startswith("basic "):
-            return value
-        return f"Basic {value}"
-
-    async def _fetch_access_token(self, client: httpx.AsyncClient) -> str:
+    def _build_gigachat_kwargs(self) -> dict[str, Any]:
         if not self.auth_key:
             raise GigaChatError("GIGACHAT_AUTH_KEY is empty")
 
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-            "RqUID": str(uuid.uuid4()),
-            "Authorization": self._auth_header_value(self.auth_key),
+        kwargs: dict[str, Any] = {
+            "credentials": self.auth_key,
+            "scope": self.scope,
+            "base_url": self.api_url,
+            "auth_url": self.oauth_url,
+            "model": self.model,
+            "timeout": self.timeout_seconds,
+            "verify_ssl_certs": self.ssl_verify,
         }
-        response = await client.post(
-            self.oauth_url,
-            data={"scope": self.scope},
-            headers=headers,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        if self.ca_bundle:
+            kwargs["ca_bundle_file"] = self.ca_bundle
+        return kwargs
 
-        access_token = str(payload.get("access_token", "")).strip()
-        if not access_token:
-            raise GigaChatError("OAuth response does not contain access_token")
+    @staticmethod
+    async def _sdk_chat(client: Any, request_payload: dict[str, Any]) -> Any:
+        achat = getattr(client, "achat", None)
+        if callable(achat):
+            return await achat(request_payload)
 
-        expires_at_raw = payload.get("expires_at")
-        expires_in_raw = payload.get("expires_in")
-        now = time.time()
-        expires_at = 0.0
+        chat = getattr(client, "chat", None)
+        if callable(chat):
+            return await asyncio.to_thread(chat, request_payload)
 
-        if expires_at_raw is not None:
-            try:
-                expires_at = float(expires_at_raw)
-                if expires_at > 1_000_000_000_000:
-                    expires_at /= 1000.0
-            except (TypeError, ValueError):
-                expires_at = 0.0
-        elif expires_in_raw is not None:
-            try:
-                expires_at = now + float(expires_in_raw)
-            except (TypeError, ValueError):
-                expires_at = 0.0
+        raise GigaChatError("GigaChat SDK client doesn't provide chat/achat methods")
 
-        if expires_at <= now:
-            expires_at = now + 1800
+    @staticmethod
+    def _extract_response_content(response: Any) -> str:
+        if isinstance(response, dict):
+            return str(response.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
 
-        self._access_token = access_token
-        self._access_token_expires_at = expires_at
-        return access_token
+        choices = getattr(response, "choices", None)
+        if choices:
+            first = choices[0]
+            message = getattr(first, "message", None)
+            if message is not None:
+                return str(getattr(message, "content", "")).strip()
 
-    async def _get_access_token(
-        self,
-        client: httpx.AsyncClient,
-        *,
-        force_refresh: bool = False,
-    ) -> str:
-        if not force_refresh and self._has_valid_access_token():
-            return self._access_token or ""
-        return await self._fetch_access_token(client)
+        model_dump = getattr(response, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump()
+            if isinstance(dumped, dict):
+                return str(dumped.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        return ""
+
+    @staticmethod
+    def _status_code_from_exception(exc: Exception) -> int | None:
+        for attr_name in ("status_code", "status", "code"):
+            value = getattr(exc, attr_name, None)
+            if isinstance(value, int) and 100 <= value <= 599:
+                return value
+
+        for arg in getattr(exc, "args", ()):
+            if isinstance(arg, int) and 100 <= arg <= 599:
+                return arg
+
+        match = re.search(r"\b([45]\d{2})\b", str(exc))
+        if match:
+            return int(match.group(1))
+        return None
+
+    @classmethod
+    def _map_response_error(cls, exc: Exception) -> GigaChatError:
+        status_code = cls._status_code_from_exception(exc)
+        details = str(exc)
+        details_upper = details.upper()
+
+        if status_code == 401:
+            return GigaChatError(f"HTTP 401: {details}")
+        if status_code == 403:
+            return GigaChatError(f"HTTP 403: {details}")
+        if status_code == 400:
+            return GigaChatError(f"HTTP 400: {details}")
+        if status_code is not None:
+            return GigaChatError(f"HTTP {status_code}: {details}")
+        if "SSL" in details_upper or "TLS" in details_upper or "CERT" in details_upper:
+            return GigaChatError(f"SSL/TLS/CERT: {details}")
+        return GigaChatError(details or exc.__class__.__name__)
 
     def _build_messages_for_ingredients(
         self,
@@ -190,35 +212,17 @@ class GigaChatClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds, verify=self._httpx_verify) as client:
-                    access_token = await self._get_access_token(client)
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "Authorization": f"Bearer {access_token}",
-                    }
-                    response = await client.post(
-                        f"{self.api_url}/chat/completions",
-                        json=request_payload,
-                        headers=headers,
-                    )
-                    if response.status_code == 401:
-                        access_token = await self._get_access_token(client, force_refresh=True)
-                        headers["Authorization"] = f"Bearer {access_token}"
-                        response = await client.post(
-                            f"{self.api_url}/chat/completions",
-                            json=request_payload,
-                            headers=headers,
-                        )
-                    response.raise_for_status()
+                client = GigaChat(**self._build_gigachat_kwargs())
+                if hasattr(client, "__aenter__") and hasattr(client, "__aexit__"):
+                    async with client as sdk_client:
+                        response = await self._sdk_chat(sdk_client, request_payload)
+                elif hasattr(client, "__enter__") and hasattr(client, "__exit__"):
+                    with client as sdk_client:
+                        response = await self._sdk_chat(sdk_client, request_payload)
+                else:
+                    response = await self._sdk_chat(client, request_payload)
 
-                response_json = response.json()
-                llm_text = (
-                    response_json.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                )
+                llm_text = self._extract_response_content(response)
                 if not llm_text:
                     raise GigaChatError("LLM returned empty response")
 
@@ -226,10 +230,14 @@ class GigaChatClient:
                 validated = RecipeResponse.model_validate(parsed)
                 logger.info("gigachat_recipe_validated", attempt=attempt, scenario=scenario)
                 return validated
-            except httpx.HTTPStatusError as exc:
-                last_error = GigaChatError(
-                    f"HTTP {exc.response.status_code}: {exc.response.text[:300]}"
-                )
+            except AuthenticationError as exc:
+                raise GigaChatError(f"HTTP 401: {exc}") from exc
+            except ForbiddenError as exc:
+                raise GigaChatError(f"HTTP 403: {exc}") from exc
+            except BadRequestError as exc:
+                raise GigaChatError(f"HTTP 400: {exc}") from exc
+            except ResponseError as exc:
+                last_error = self._map_response_error(exc)
                 logger.warning(
                     "gigachat_attempt_failed",
                     scenario=scenario,
@@ -237,7 +245,7 @@ class GigaChatClient:
                     max_retries=self.max_retries,
                     error=str(last_error),
                 )
-            except (httpx.RequestError, json.JSONDecodeError, ValidationError, GigaChatError) as exc:
+            except (json.JSONDecodeError, ValidationError, GigaChatError) as exc:
                 last_error = exc
                 logger.warning(
                     "gigachat_attempt_failed",
@@ -245,6 +253,15 @@ class GigaChatClient:
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error=str(exc),
+                )
+            except Exception as exc:
+                last_error = self._map_response_error(exc)
+                logger.warning(
+                    "gigachat_attempt_failed",
+                    scenario=scenario,
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error=str(last_error),
                 )
 
         raise GigaChatError(f"Failed to get valid recipe after {self.max_retries} attempts: {last_error}")
