@@ -16,6 +16,7 @@ from core.services.prompt_templates import (
     READY_DISH_PROMPT_TEMPLATE,
     SYSTEM_PROMPT,
 )
+from core.services.safety_service import check_recipe_output
 from schemas import RecipeResponse
 
 logger = structlog.get_logger(__name__)
@@ -202,7 +203,7 @@ class GigaChatClient:
             "messages": messages,
             "n": 1,
             "stream": False,
-            "max_tokens": 512,
+            "max_tokens": 900,
             "repetition_penalty": 1,
             "update_interval": 0,
             "temperature": 0.3,
@@ -228,6 +229,22 @@ class GigaChatClient:
 
                 parsed = self._extract_json(llm_text)
                 validated = RecipeResponse.model_validate(parsed)
+                safety_result = check_recipe_output(
+                    recipe_title=validated.title,
+                    ingredients=validated.ingredients,
+                    steps=validated.steps,
+                )
+                if not safety_result.is_safe:
+                    logger.warning(
+                        "gigachat_recipe_blocked_by_safety",
+                        scenario=scenario,
+                        category=safety_result.category,
+                        matched_terms=list(safety_result.matched_terms),
+                    )
+                    raise GigaChatError(
+                        "UNSAFE_RECIPE: "
+                        f"category={safety_result.category}; terms={','.join(safety_result.matched_terms)}"
+                    )
                 logger.info("gigachat_recipe_validated", attempt=attempt, scenario=scenario)
                 return validated
             except AuthenticationError as exc:

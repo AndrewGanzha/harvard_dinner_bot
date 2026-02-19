@@ -202,6 +202,47 @@ class RecipeRepository:
             result.append(RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0)))
         return result
 
+    async def list_recent_recipes_with_rating_for_user(
+        self,
+        user_id: int,
+        limit: int,
+    ) -> list[RecipeWithRating]:
+        rating = func.coalesce(func.sum(RecipeVote.vote), 0).label("rating")
+        rows = await self.session.execute(
+            select(Recipe, rating)
+            .outerjoin(RecipeVote, RecipeVote.recipe_id == Recipe.id)
+            .where(Recipe.user_id == user_id)
+            .group_by(Recipe.id)
+            .order_by(Recipe.created_at.desc())
+            .limit(limit)
+        )
+        return [
+            RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0))
+            for recipe, recipe_rating in rows.all()
+        ]
+
+    async def list_recent_recipes_with_rating_global(
+        self,
+        limit: int,
+        exclude_user_id: int | None = None,
+    ) -> list[RecipeWithRating]:
+        rating = func.coalesce(func.sum(RecipeVote.vote), 0).label("rating")
+        query = (
+            select(Recipe, rating)
+            .outerjoin(RecipeVote, RecipeVote.recipe_id == Recipe.id)
+            .group_by(Recipe.id)
+            .order_by(Recipe.created_at.desc())
+        )
+        if exclude_user_id is not None:
+            query = query.where(Recipe.user_id != exclude_user_id)
+        query = query.limit(limit)
+
+        rows = await self.session.execute(query)
+        return [
+            RecipeWithRating(recipe=recipe, rating=int(recipe_rating or 0))
+            for recipe, recipe_rating in rows.all()
+        ]
+
     async def get_user_settings(self, user_id: int) -> UserSettings:
         user = await self.session.get(User, user_id)
         if user is None:

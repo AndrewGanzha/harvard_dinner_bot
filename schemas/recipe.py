@@ -65,8 +65,8 @@ class PlateMap(BaseModel):
 
 class RecipeResponse(BaseModel):
     title: str
-    ingredients: list[str]
-    steps: list[str]
+    ingredients: list[str] = Field(min_length=4)
+    steps: list[str] = Field(min_length=5)
     time_minutes: PositiveInt
     servings: PositiveInt
     plate_map: PlateMap
@@ -77,6 +77,22 @@ class RecipeResponse(BaseModel):
     @classmethod
     def _normalize_lists(cls, value: Any) -> list[str]:
         return _coerce_to_list(value)
+
+    @field_validator("ingredients", mode="after")
+    @classmethod
+    def _validate_ingredients_quality(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if len(re.sub(r"[^a-zа-я0-9]+", "", value.lower())) >= 2]
+        if len(cleaned) < 4:
+            raise ValueError("ingredients must contain at least 4 meaningful items")
+        return cleaned
+
+    @field_validator("steps", mode="after")
+    @classmethod
+    def _validate_steps_quality(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if len(re.sub(r"[^a-zа-я0-9]+", "", value.lower())) >= 12]
+        if len(cleaned) < 5:
+            raise ValueError("steps must contain at least 5 detailed items")
+        return cleaned
 
     @field_validator("time_minutes", "servings", mode="before")
     @classmethod

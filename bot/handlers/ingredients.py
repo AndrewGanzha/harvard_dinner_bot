@@ -10,11 +10,16 @@ from bot.keyboards.browse import recipe_actions_keyboard
 from bot.states import UserMode
 from core.services.gigachat_service import GigaChatClient, GigaChatError
 from core.services.plate_service import PlateService
+from core.services.recipe_match_service import find_best_recipe_match
+from core.services.safety_service import build_block_message, check_user_input
 from db.repo import RecipeRepository
 from db.session import SessionFactory
+from schemas import RecipeResponse
 
 logger = structlog.get_logger(__name__)
 router = Router()
+RECENT_USER_RECIPES_LIMIT = 150
+RECENT_GLOBAL_RECIPES_LIMIT = 300
 
 
 def _split_ingredients(text: str) -> list[str]:
@@ -25,6 +30,11 @@ def _split_ingredients(text: str) -> list[str]:
 def _gigachat_error_message(exc: Exception) -> str:
     details = str(exc)
     details_upper = details.upper()
+    if "UNSAFE_RECIPE" in details_upper:
+        return (
+            "Не удалось безопасно сгенерировать рецепт по этому запросу. "
+            "Уточните съедобные ингредиенты и попробуйте снова."
+        )
     if "SSL" in details_upper or "TLS" in details_upper or "CERT" in details_upper:
         return (
             "Не удалось установить защищенное соединение с GigaChat. "
@@ -50,12 +60,30 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
         await message.answer("Не вижу ингредиентов. Отправьте список через запятую или с новой строки.")
         return
 
+    safety_result = check_user_input(ingredients)
+    if not safety_result.is_safe:
+        logger.warning(
+            "recipe_blocked_by_safety",
+            mode="ingredients",
+            category=safety_result.category,
+            matched_terms=list(safety_result.matched_terms),
+        )
+        await message.answer(build_block_message(safety_result))
+        await state.set_state(UserMode.main_menu)
+        return
+
     plate_service = PlateService()
     analysis = plate_service.analyze(ingredients)
     await message.answer(format_plate_analysis(analysis))
 
     user_id: int | None = None
     user_preferences_text = "нет"
+    reused_payload: dict | None = None
+    reused_recipe_id: int | None = None
+    reused_rating = 0
+    reused_similarity = 0.0
+    reused_scope: str | None = None
+    reused_is_favorite = False
     async with SessionFactory() as session:
         repo = RecipeRepository(session)
         user = await repo.ensure_user(
@@ -65,7 +93,54 @@ async def ingredients_input_handler(message: Message, state: FSMContext) -> None
         user_id = user.id
         settings = await repo.get_user_settings(user.id)
         user_preferences_text = settings.prompt_text()
+
+        user_candidates = await repo.list_recent_recipes_with_rating_for_user(
+            user_id=user.id,
+            limit=RECENT_USER_RECIPES_LIMIT,
+        )
+        match = find_best_recipe_match(ingredients, user_candidates)
+        if match is not None:
+            reused_scope = "user"
+        else:
+            global_candidates = await repo.list_recent_recipes_with_rating_global(
+                limit=RECENT_GLOBAL_RECIPES_LIMIT,
+                exclude_user_id=user.id,
+            )
+            match = find_best_recipe_match(ingredients, global_candidates)
+            if match is not None:
+                reused_scope = "global"
+
+        if match is not None:
+            reused_payload = match.item.recipe.llm_response or {}
+            reused_recipe_id = match.item.recipe.id
+            reused_rating = match.item.rating
+            reused_similarity = match.similarity
+            reused_is_favorite = reused_recipe_id in await repo.get_user_favorite_recipe_ids(user.id)
         await session.commit()
+
+    if reused_payload and reused_recipe_id is not None:
+        try:
+            reused_recipe = RecipeResponse.model_validate(reused_payload)
+        except Exception:
+            logger.warning("recipe_reuse_skipped_invalid_payload", recipe_id=reused_recipe_id)
+        else:
+            logger.info(
+                "recipe_reused",
+                scope=reused_scope,
+                matched_recipe_id=reused_recipe_id,
+                similarity=reused_similarity,
+            )
+            await message.answer(
+                format_recipe(reused_recipe),
+                reply_markup=recipe_actions_keyboard(recipe_id=reused_recipe_id, is_favorite=reused_is_favorite),
+            )
+            await message.answer(
+                f"Найден похожий рецепт #{reused_recipe_id} (scope: {reused_scope}, "
+                f"similarity: {reused_similarity:.2f}). Новая генерация не выполнялась. "
+                f"Рейтинг: {reused_rating:+d}"
+            )
+            await state.set_state(UserMode.main_menu)
+            return
 
     try:
         recipe = await GigaChatClient().generate_recipe_from_ingredients(
